@@ -1,0 +1,384 @@
+#!/usr/bin/env bash
+# tx_pdf - Hantera PDF-filer (extrahera, slå ihop, 2-up, etc.)
+
+set -e
+
+VERSION="1.0.0"
+AUTHOR="Nikodemus Karlsson"
+
+# Kontrollera att pdfjam finns
+if ! command -v pdfjam &> /dev/null; then
+    echo "❌ pdfjam saknas!"
+    echo ""
+    echo "pdfjam ingår normalt i TeXLive."
+    exit 1
+fi
+
+usage() {
+    cat << EOF
+tx_pdf v$VERSION – Hantera PDF-filer (extrahera, slå ihop, 2-up, mm.)
+
+Användning: $0 <kommando> [argument]
+
+KOMMANDON:
+  extract <input.pdf> <sidor> [output.pdf]
+      Extrahera specifika sidor
+      Ex: $0 extract total.pdf 5-10,12,13 samples.pdf
+  
+  reorder <input.pdf> <ny-ordning> [output.pdf]
+      Ändra ordning på sidor
+      Ex: $0 reorder dokument.pdf 5,4,3,2,1 omvänd.pdf
+  
+  merge <output.pdf> <fil1.pdf> <fil2.pdf> ...
+      Slå ihop flera PDF-filer
+      Ex: $0 merge komplett.pdf kap1.pdf kap2.pdf bilaga.pdf
+  
+  2up <input.pdf> [output.pdf]
+      Två sidor per ark (liggande A4)
+      Ex: $0 2up dokument.pdf utskrift.pdf
+  
+  2up-select <input.pdf> <sidor> [output.pdf]
+      Två sidor per ark, endast valda sidor
+      Ex: $0 2up-select bok.pdf 5-12,20-25 kapitel.pdf
+  
+  nup <input.pdf> <n> [output.pdf]
+      N sidor per ark (2, 4, 6, 8, 9, 16)
+      Ex: $0 nup presentation.pdf 4 handout.pdf
+  
+  booklet <input.pdf> [output.pdf]
+      Skapa booklet (utskrift som kan vikas till en bok)
+      Ex: $0 booklet roman.pdf bok.pdf
+  
+  split <input.pdf> [prefix]
+      Dela upp PDF (en fil per sida)
+      Ex: $0 split kapitel.pdf sida_
+
+  info <input.pdf>
+      Visa information om PDF:en (antal sidor, etc.)
+      Ex: $0 info dokument.pdf
+  
+  compress <input.pdf> [output.pdf]
+      Komprimera PDF (minska filstorlek)
+      Ex: $0 compress stor.pdf liten.pdf
+  
+  compress-all [katalog]
+      Komprimera alla PDF-filer i angiven katalog (default: aktuell)
+      Ex: $0 compress-all ~/dokument/
+  
+  check-ocr <input.pdf>
+      Kontrollera om PDF innehåller text (sökbar) eller bara bilder
+      Ex: $0 check-ocr skannad.pdf
+
+  thumbnails <input.pdf> [storlek] [output-mapp]
+      Skapa miniatyrbilder (som PNG)
+      Ex: $0 thumbnails presentation.pdf 200x200 miniatyrer/
+
+  --version          Visa version och avsluta
+  -h, --help         Visa denna hjälp
+
+EXEMPEL:
+  $0 extract rapport.pdf 1-3,5,7-9 sammanfattning.pdf
+  $0 reorder dokument.pdf 5,4,3,2,1 omvänd.pdf
+  $0 merge slutlig.pdf inledning.pdf main.pdf slutsats.pdf
+  $0 2up forelasning.pdf handout.pdf
+  $0 2up-select bok.pdf 10-20,25-30 utdrag.pdf
+  $0 nup bildspel.pdf 4 fyrperark.pdf
+  $0 booklet bok.pdf booklet.pdf
+  $0 split kapitel.pdf sida_
+  $0 info dokument.pdf
+  $0 compress stor.pdf liten.pdf
+  $0 compress-all ~/dokument/
+  $0 check-ocr skannad.pdf
+  $0 thumbnails presentation.pdf 200x200 miniatyrer/
+EOF
+}
+
+# Visa information med pdfinfo
+pdf_info() {
+    if command -v pdfinfo &> /dev/null; then
+        pdfinfo "$1"
+    else
+        echo "pdfinfo saknas. Installera poppler-utils:"
+        echo "  macOS: brew install poppler"
+        echo "  Ubuntu: sudo apt install poppler-utils"
+        echo ""
+        echo "Försöker med Ghostscript istället:"
+        gs -q -dNODISPLAY -c "($1) (r) file runpdfbegin pdfinfo" -
+    fi
+}
+
+# Komprimera PDF med Ghostscript
+pdf_compress() {
+    local input="$1"
+    local output="${2:-komprimerad.pdf}"
+    echo "Komprimerar $input → $output ..."
+    gs -sDEVICE=pdfwrite \
+       -dCompatibilityLevel=1.4 \
+       -dPDFSETTINGS=/ebook \
+       -dNOPAUSE -dBATCH -dSAFER \
+       -sOutputFile="$output" \
+       "$input" > /dev/null 2>&1
+    
+    if [[ -f "$output" ]]; then
+        local original=$(stat -f%z "$input" 2>/dev/null || stat -c%s "$input" 2>/dev/null)
+        local komprimerad=$(stat -f%z "$output" 2>/dev/null || stat -c%s "$output" 2>/dev/null)
+        echo "✅ Storlek: $original → $komprimerad bytes"
+    else
+        echo "❌ Komprimering misslyckades"
+    fi
+}
+
+# Dela upp PDF i enskilda sidor (portabel version)
+pdf_split() {
+    local input="$1"
+    local prefix="${2:-sida_}"
+    
+    if [[ ! -f "$input" ]]; then
+        echo "❌ Filen $input finns inte"
+        return 1
+    fi
+    
+    local pages=$(pdfinfo "$input" 2>/dev/null | grep -i "Pages" | awk '{print $2}')
+    if [[ -z "$pages" ]]; then
+        pages=$(gs -q -dNODISPLAY -c "($input) (r) file runpdfbegin pdfpagecount = quit" 2>/dev/null)
+    fi
+    
+    echo "Delar upp $input ($pages sidor) → ${prefix}*.pdf"
+    
+    for ((i=1; i<=pages; i++)); do
+        local output="${prefix}${i}.pdf"
+        gs -sDEVICE=pdfwrite \
+           -dNOPAUSE -dBATCH -dSAFER \
+           -sOutputFile="$output" \
+           -dFirstPage="$i" -dLastPage="$i" \
+           "$input" > /dev/null 2>&1
+        echo "  Skapade: $output"
+    done
+    
+    echo "✅ Delade upp $pages sidor"
+}
+
+# Ändra ordning med Ghostscript
+pdf_reorder() {
+    local input="$1"
+    local order="$2"
+    local output="${3:-omordnad.pdf}"
+    
+    echo "Ändrar ordning till $order → $output"
+    
+    # Portabel temporär katalog
+    local temp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t 'reorder')
+    
+    local pages=$(pdfinfo "$input" 2>/dev/null | grep -i "Pages" | awk '{print $2}')
+    if [[ -z "$pages" ]]; then
+        pages=$(gs -q -dNODISPLAY -c "($input) (r) file runpdfbegin pdfpagecount = quit" 2>/dev/null)
+    fi
+    
+    for ((i=1; i<=pages; i++)); do
+        gs -sDEVICE=pdfwrite \
+           -dNOPAUSE -dBATCH -dSAFER \
+           -sOutputFile="$temp_dir/page_$i.pdf" \
+           -dFirstPage="$i" -dLastPage="$i" \
+           "$input" > /dev/null 2>&1
+    done
+    
+    local file_list=""
+    IFS=',' read -ra ORDER_ARRAY <<< "$order"
+    for page in "${ORDER_ARRAY[@]}"; do
+        file_list="$file_list $temp_dir/page_$page.pdf"
+    done
+    
+    gs -sDEVICE=pdfwrite \
+       -dNOPAUSE -dBATCH -dSAFER \
+       -sOutputFile="$output" \
+       $file_list > /dev/null 2>&1
+    
+    rm -rf "$temp_dir"
+    
+    if [[ -f "$output" ]]; then
+        echo "✅ Ändrade ordning till $order → $output"
+    else
+        echo "❌ Omordning misslyckades"
+        return 1
+    fi
+}
+
+# Skapa miniatyrbilder
+pdf_thumbnails() {
+    local input="$1"
+    local size="${2:-200x200}"
+    local output_dir="${3:-thumbnails}"
+    
+    mkdir -p "$output_dir"
+    
+    echo "Skapar miniatyrbilder (${size}) från $input → $output_dir/"
+    
+    if command -v magick &> /dev/null; then
+        magick -density 150 "$input" -resize "$size" -quality 85 "$output_dir/page-%03d.png"
+    elif command -v convert &> /dev/null; then
+        convert -density 150 "$input" -resize "$size" -quality 85 "$output_dir/page-%03d.png"
+    else
+        echo "❌ ImageMagick saknas. Installera: brew install imagemagick"
+        return 1
+    fi
+    
+    local count=$(ls "$output_dir"/*.png 2>/dev/null | wc -l | tr -d ' ')
+    echo "✅ Skapade $count miniatyrbilder i $output_dir/"
+}
+
+# Komprimera alla PDF-filer i en katalog
+pdf_compress_all() {
+    local dir="${1:-.}"
+    
+    echo "Komprimerar alla PDF-filer i $dir"
+    
+    find "$dir" -maxdepth 1 -name "*.pdf" -type f | while read -r file; do
+        local output="${file%.pdf}_komprimerad.pdf"
+        pdf_compress "$file" "$output"
+    done
+    
+    echo "✅ Klar"
+}
+
+# Kontrollera om PDF har text
+pdf_check_ocr() {
+    local input="$1"
+    
+    echo "Kontrollerar om $input innehåller text..."
+    
+    if command -v pdftotext &> /dev/null; then
+        local text=$(pdftotext "$input" - 2>/dev/null | tr -d '[:space:]')
+        if [[ -n "$text" ]]; then
+            echo "✅ PDF innehåller text (sökbar)"
+            return 0
+        else
+            echo "❌ PDF innehåller INGEN text (kan vara skannad bild)"
+            return 1
+        fi
+    else
+        echo "pdftotext saknas. Installera poppler-utils för bättre analys."
+        return 1
+    fi
+}
+
+# Huvudlogik
+case "$1" in
+    extract)
+        INPUT="$2"
+        PAGES="$3"
+        OUTPUT="${4:-extraherad.pdf}"
+        pdfjam "$INPUT" "$PAGES" --outfile "$OUTPUT" 2>/dev/null || \
+        pdfjam --pages "$PAGES" "$INPUT" --outfile "$OUTPUT"
+        echo "✅ Extraherade sidor $PAGES → $OUTPUT"
+        ;;
+    
+    reorder)
+        pdf_reorder "$2" "$3" "$4"
+        ;;
+    
+    merge)
+        OUTPUT="$2"
+        shift 2
+        pdfjam "$@" --outfile "$OUTPUT"
+        echo "✅ Sammanslog $# filer → $OUTPUT"
+        ;;
+    
+    2up)
+        INPUT="$2"
+        OUTPUT="${3:-2up.pdf}"
+        pdfjam "$INPUT" --nup 2x1 --landscape --outfile "$OUTPUT"
+        echo "✅ Skapade $OUTPUT (2 sidor per ark, liggande)"
+        ;;
+    
+    2up-select)
+        INPUT="$2"
+        PAGES="$3"
+        OUTPUT="${4:-2up.pdf}"
+        pdfjam --pages "$PAGES" "$INPUT" --nup 2x1 --landscape --outfile "$OUTPUT" 2>/dev/null || \
+        pdfjam "$INPUT" "$PAGES" --nup 2x1 --landscape --outfile "$OUTPUT" 2>/dev/null || \
+        (
+            # Portabel temporär fil
+            TEMP_PDF=$(mktemp 2>/dev/null || mktemp -t temp_pdf)
+            mv "$TEMP_PDF" "${TEMP_PDF}.pdf"
+            TEMP_PDF="${TEMP_PDF}.pdf"
+            pdfjam "$INPUT" --pages "$PAGES" --outfile "$TEMP_PDF"
+            pdfjam "$TEMP_PDF" --nup 2x1 --landscape --outfile "$OUTPUT"
+            rm -f "$TEMP_PDF"
+        )
+        echo "✅ Skapade $OUTPUT (sidor $PAGES, 2 per ark)"
+        ;;
+    
+    nup)
+        INPUT="$2"
+        NUP="$3"
+        OUTPUT="${4:-${NUP}up.pdf}"
+        
+        case "$NUP" in
+            2) LAYOUT="2x1" ;;
+            4) LAYOUT="2x2" ;;
+            6) LAYOUT="3x2" ;;
+            8) LAYOUT="4x2" ;;
+            9) LAYOUT="3x3" ;;
+            16) LAYOUT="4x4" ;;
+            *)
+                echo "Fel: NUP måste vara 2,4,6,8,9 eller 16"
+                exit 1
+                ;;
+        esac
+        
+        if [[ "$NUP" -eq 2 ]]; then
+            pdfjam "$INPUT" --nup "$LAYOUT" --landscape --outfile "$OUTPUT"
+        else
+            pdfjam "$INPUT" --nup "$LAYOUT" --outfile "$OUTPUT"
+        fi
+        echo "✅ Skapade $OUTPUT ($NUP sidor per ark)"
+        ;;
+    
+    booklet)
+        INPUT="$2"
+        OUTPUT="${3:-booklet.pdf}"
+        pdfjam "$INPUT" --booklet true --outfile "$OUTPUT"
+        echo "✅ Skapade booklet $OUTPUT (vikbar till bok)"
+        ;;
+    
+    split)
+        pdf_split "$2" "$3"
+        ;;
+    
+    thumbnails)
+        pdf_thumbnails "$2" "$3" "$4"
+        ;;
+    
+    info)
+        pdf_info "$2"
+        ;;
+    
+    compress)
+        pdf_compress "$2" "$3"
+        ;;
+    
+    compress-all)
+        pdf_compress_all "$2"
+        ;;
+    
+    check-ocr)
+        pdf_check_ocr "$2"
+        ;;
+    
+    --version)
+        echo "tx_pdf version $VERSION"
+        echo "Författare: $AUTHOR"
+        exit 0
+        ;;
+    
+    -h|--help|help|"")
+        usage
+        ;;
+    
+    *)
+        echo "Okänt kommando: $1"
+        echo ""
+        usage
+        exit 1
+        ;;
+esac

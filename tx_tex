@@ -1,0 +1,367 @@
+#!/usr/bin/env bash
+set -e
+
+VERSION="1.0.0"
+AUTHOR="Nikodemus Karlsson"
+
+# Defaultvärden
+INPUT="main.tex"
+FORMAT="pdf"
+DPI=300
+WATCH_MODE=false
+CLEAN_MODE=false
+CLEAN_JOBNAME=""
+
+# PNG-bakgrund (default: vit)
+BG_COLOR="white"
+BG_TRANSPARENT=false
+TRIM=false          # Beskär vit marginal automatiskt
+
+# Kontrollera att beroenden finns
+for cmd in lualatex latexmk; do
+    if ! command -v $cmd &> /dev/null; then
+        echo "❌ $cmd saknas. Installera:"
+        echo "   macOS: brew install $([ "$cmd" = "magick" ] && echo "imagemagick" || echo "$cmd")"
+        echo "   Ubuntu: sudo apt install $([ "$cmd" = "latexmk" ] && echo "latexmk" || echo "texlive-luatex")"
+        exit 1
+    fi
+done
+
+# ImageMagick kontrolleras endast om PNG-läge används (görs senare)
+
+# Läs in inställningar från .latexmkrc om den finns
+LATEXMK_RC=".latexmkrc"
+AUX_DIR=""
+OUT_DIR=""
+JOBNAME=""
+
+if [[ -f "$LATEXMK_RC" ]]; then
+    # Extrahera inställningar från .latexmkrc
+    while IFS= read -r line; do
+        # Ignorera kommentarer (rader som börjar med %)
+        [[ "$line" =~ ^[[:space:]]*% ]] && continue
+        
+        # Extrahera aux_dir (med eller utan citattecken)
+        if [[ "$line" =~ \$aux_dir[[:space:]]*=[[:space:]]*[\'\"]([^\'\"]+)[\'\"] ]]; then
+            AUX_DIR="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ \$aux_dir[[:space:]]*=[[:space:]]*([^[:space:];]+) ]]; then
+            AUX_DIR="${BASH_REMATCH[1]}"
+        fi
+        
+        # Extrahera out_dir
+        if [[ "$line" =~ \$out_dir[[:space:]]*=[[:space:]]*[\'\"]([^\'\"]+)[\'\"] ]]; then
+            OUT_DIR="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ \$out_dir[[:space:]]*=[[:space:]]*([^[:space:];]+) ]]; then
+            OUT_DIR="${BASH_REMATCH[1]}"
+        fi
+        
+        # Extrahera jobname
+        if [[ "$line" =~ \$jobname[[:space:]]*=[[:space:]]*[\'\"]([^\'\"]+)[\'\"] ]]; then
+            JOBNAME="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ \$jobname[[:space:]]*=[[:space:]]*([^[:space:];]+) ]]; then
+            JOBNAME="${BASH_REMATCH[1]}"
+        fi
+    done < "$LATEXMK_RC"
+fi
+
+# Ta bort eventuella citattecken och mellanslag
+AUX_DIR=$(echo "$AUX_DIR" | xargs)
+OUT_DIR=$(echo "$OUT_DIR" | xargs)
+JOBNAME=$(echo "$JOBNAME" | xargs)
+
+# Om JOBNAME fortfarande är tomt, använd "main" som default
+if [[ -z "$JOBNAME" ]]; then
+    JOBNAME="main"
+fi
+
+usage() {
+  cat << EOF
+tx_tex v$VERSION – Bygg LuaLaTeX-projekt till PDF eller PNG
+
+Användning: $0 [ALTERNATIV]
+
+Respekterar inställningar i .latexmkrc (out_dir, aux_dir, jobname).
+
+ALTERNATIV:
+  -i, --input FIL    Input .tex-fil (default: main.tex)
+                     OBS: Namnet på input-filen används då som output-namn
+                     (överskuggar eventuellt \$jobname i .latexmkrc)
+  -f, --format TYP   Välj "pdf" (default) eller "png"
+  --dpi NUMMER       DPI för PNG (default: 300, endast för PNG)
+  
+  --bg-color FÄRG    Bakgrundsfärg för PNG (default: white)
+                     Exempel: white, black, lightblue, "#ffffff"
+                     RGBA: "rgba(255,0,0,0.5)" (halvtransparent röd)
+  --bg-transparent   Gör bakgrunden transparent (överskuggar --bg-color)
+  --trim             Beskär bort vit/transparent marginal automatiskt
+  
+  -w, --watch        Live-läge (latexmk -pvc, endast PDF)
+  -c, --clean [FIL]  Rensa byggfiler för angivet jobbnamn/fil
+                     (om inget anges används \$jobname från .latexmkrc)
+  --version          Visa version och avsluta
+  -h, --help         Visa denna hjälp
+
+BEROENDE:
+  - lualatex (LuaLaTeX)          - LaTeX-motorn
+  - latexmk                      - Automatiserad LaTeX-byggare
+  - Ghostscript (gs)             - PDF-tolk (krävs av ImageMagick)
+  - ImageMagick (magick)         - PDF → PNG-konvertering (krävs för PNG)
+
+PRIORITERINGSORDNING FÖR OUTPUT-NAMN:
+  1. Namnet från -i (utan .tex)
+  2. Annars \$jobname från .latexmkrc
+  3. Annars "main"
+
+EXEMPEL:
+  # PDF
+  $0                              # Använder \$jobname eller "main"
+  $0 -i rapport.tex               # Skapar rapport.pdf
+  
+  # PNG med vit bakgrund (default)
+  $0 -i formel.tex -f png
+  
+  # PNG med transparent bakgrund
+  $0 -i logga.tex -f png --bg-transparent
+  
+  # PNG med färgad bakgrund
+  $0 -i diagram.tex -f png --bg-color lightblue
+  $0 -i diagram.tex -f png --bg-color "#1a1a2e"
+  
+  # PNG med automatisk beskärning
+  $0 -i formel.tex -f png --trim
+  
+  # Live-läge och rensning
+  $0 -w                           # Live-läge
+  $0 -c                           # Rensa byggfiler för \$jobname
+  $0 -c formel                    # Rensa byggfiler för "formel"
+
+NOT OM RGBA-FÄRGER:
+  Format: "rgba(R,G,B,Alpha)"
+  - R,G,B: 0-255 (heltal)
+  - Alpha: 0.0 (helt transparent) till 1.0 (helt opak)
+EOF
+}
+
+# Parsa argument
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -i|--input)
+      INPUT="$2"
+      # -i överskuggar ALLTID: använd filnamnet som JOBNAME
+      JOBNAME=$(basename "$INPUT" .tex)
+      shift 2
+      ;;
+    -f|--format)
+      FORMAT="$2"
+      shift 2
+      ;;
+    --dpi)
+      DPI="$2"
+      shift 2
+      ;;
+    --bg-color)
+      BG_COLOR="$2"
+      BG_TRANSPARENT=false
+      shift 2
+      ;;
+    --bg-transparent)
+      BG_TRANSPARENT=true
+      shift
+      ;;
+    --trim)
+      TRIM=true
+      shift
+      ;;
+    -w|--watch)
+      WATCH_MODE=true
+      shift
+      ;;
+    -c|--clean)
+      CLEAN_MODE=true
+      # Kolla om nästa argument är ett jobbnamn (inte börjar med -)
+      if [[ -n "$2" && "$2" != -* ]]; then
+        CLEAN_JOBNAME="$2"
+        shift
+      fi
+      shift
+      ;;
+    --version)
+      echo "tx_tex version $VERSION"
+      echo "Författare: $AUTHOR"
+      exit 0
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Okänt alternativ: $1"
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+# Rensningsläge
+if [[ "$CLEAN_MODE" == true ]]; then
+  # Bestäm vilket jobbnamn som ska rensas
+  if [[ -n "$CLEAN_JOBNAME" ]]; then
+    # Ta bort eventuell .tex-ändelse
+    CLEAN_JOBNAME=$(basename "$CLEAN_JOBNAME" .tex)
+    CLEAN_TARGET="$CLEAN_JOBNAME"
+    echo "Rensar byggfiler för: $CLEAN_TARGET"
+  else
+    CLEAN_TARGET="$JOBNAME"
+    echo "Rensar byggfiler för: $CLEAN_TARGET (från .latexmkrc/main)"
+  fi
+  
+  # Rensa filer i out_dir och aux_dir
+  if [[ -n "$OUT_DIR" ]]; then
+    rm -f "${OUT_DIR}/${CLEAN_TARGET}.pdf" 2>/dev/null || true
+    rm -f "${OUT_DIR}/${CLEAN_TARGET}.png" 2>/dev/null || true
+  else
+    rm -f "${CLEAN_TARGET}.pdf" 2>/dev/null || true
+    rm -f "${CLEAN_TARGET}.png" 2>/dev/null || true
+  fi
+  
+  # Rensa temporära byggfiler med latexmk
+  TEMP_TEX="${CLEAN_TARGET}.tex"
+  if [[ ! -f "$TEMP_TEX" ]]; then
+    echo "% dummy file for cleaning" > "$TEMP_TEX"
+    latexmk -C -cd "$TEMP_TEX" 2>/dev/null || true
+    rm -f "$TEMP_TEX"
+  else
+    latexmk -C -cd "$TEMP_TEX" 2>/dev/null || true
+  fi
+  
+  # Rensa även i aux_dir om den finns
+  if [[ -n "$AUX_DIR" && -d "$AUX_DIR" ]]; then
+    rm -f "${AUX_DIR}/${CLEAN_TARGET}".* 2>/dev/null || true
+    rmdir "$AUX_DIR" 2>/dev/null || true
+  fi
+  
+  echo "✅ Rensning klar för: $CLEAN_TARGET"
+  exit 0
+fi
+
+# Validera format
+if [[ "$FORMAT" != "pdf" && "$FORMAT" != "png" ]]; then
+  echo "Fel: Format måste vara 'pdf' eller 'png' (var: $FORMAT)"
+  exit 1
+fi
+
+# Watch-läge
+if [[ "$WATCH_MODE" == true ]]; then
+  if [[ "$FORMAT" != "pdf" ]]; then
+    echo "Varning: Watch-läge stöds endast för PDF. Växlar till PDF-format."
+    FORMAT="pdf"
+  fi
+  echo "Startar live-läge för $INPUT (PDF, jobbnamn: $JOBNAME)..."
+  latexmk -pvc -cd -jobname="$JOBNAME" "$INPUT"
+  exit 0
+fi
+
+# Bestäm output-sökvägar (respektera out_dir)
+if [[ -n "$OUT_DIR" ]]; then
+    GENERATED_PDF="${OUT_DIR}/${JOBNAME}.pdf"
+    if [[ "$FORMAT" == "pdf" ]]; then
+        OUTPUT="${OUT_DIR}/${JOBNAME}.pdf"
+    else
+        OUTPUT="${OUT_DIR}/${JOBNAME}.png"
+    fi
+else
+    GENERATED_PDF="${JOBNAME}.pdf"
+    if [[ "$FORMAT" == "pdf" ]]; then
+        OUTPUT="${JOBNAME}.pdf"
+    else
+        OUTPUT="${JOBNAME}.png"
+    fi
+fi
+
+# Bygg-läge
+if [[ "$FORMAT" == "pdf" ]]; then
+  echo "========================================="
+  echo "tx_tex v$VERSION"
+  echo "Bygger: $INPUT"
+  echo "Jobbnamn: $JOBNAME"
+  echo "PDF-output: $OUTPUT"
+  echo "Out_dir: ${OUT_DIR:-.}"
+  echo "Aux_dir: ${AUX_DIR:-.}"
+  echo "========================================="
+  
+  # Kör latexmk med explicit jobname
+  latexmk -cd -jobname="$JOBNAME" "$INPUT"
+  
+  # Kontrollera att PDF skapades på rätt plats
+  if [[ ! -f "$GENERATED_PDF" ]]; then
+    echo "Fel: Kunde inte hitta $GENERATED_PDF"
+    echo "Kontrollera din .latexmkrc-konfiguration."
+    exit 1
+  fi
+  
+  echo "✅ Klar: $GENERATED_PDF"
+
+else # PNG-läge
+  
+  # Kontrollera ImageMagick endast vid PNG-läge
+  if ! command -v magick &> /dev/null; then
+      echo "❌ magick (ImageMagick) saknas. Installera:"
+      echo "   macOS: brew install imagemagick"
+      echo "   Ubuntu: sudo apt install imagemagick"
+      exit 1
+  fi
+  
+  echo "========================================="
+  echo "tx_tex v$VERSION"
+  echo "Bygger: $INPUT"
+  echo "Jobbnamn: $JOBNAME"
+  echo "PNG-output: $OUTPUT (${DPI} DPI)"
+  echo "Out_dir: ${OUT_DIR:-.}"
+  
+  # Visa bakgrundsinformation
+  if [[ "$BG_TRANSPARENT" == true ]]; then
+    echo "Bakgrund: Transparent"
+  else
+    echo "Bakgrund: $BG_COLOR"
+  fi
+  
+  if [[ "$TRIM" == true ]]; then
+    echo "Beskärning: Ja (automatisk marginalbeskärning)"
+  else
+    echo "Beskärning: Nej"
+  fi
+  echo "========================================="
+  
+  # Skapa PDF med latexmk och explicit jobname
+  latexmk -cd -jobname="$JOBNAME" "$INPUT" > /dev/null
+  
+  # Kontrollera att PDF skapades på rätt plats
+  if [[ ! -f "$GENERATED_PDF" ]]; then
+    echo "Fel: Kunde inte hitta PDF-filen på förväntad plats: $GENERATED_PDF"
+    echo "Kontrollera att 'jobname' är korrekt."
+    exit 1
+  fi
+  
+  # Konvertera PDF → PNG med vald bakgrund och beskärning
+  echo "Konverterar $GENERATED_PDF → $OUTPUT ..."
+  
+  # Bygg grundkommandot
+  if [[ "$BG_TRANSPARENT" == true ]]; then
+    CMD="magick -density $DPI \"$GENERATED_PDF\" -background none -flatten"
+  else
+    CMD="magick -density $DPI \"$GENERATED_PDF\" -background \"$BG_COLOR\" -flatten"
+  fi
+  
+  # Lägg till beskärning om begärd
+  if [[ "$TRIM" == true ]]; then
+    CMD="$CMD -trim"
+  fi
+  
+  # Lägg till output-fil
+  CMD="$CMD \"$OUTPUT\""
+  
+  # Utför kommandot
+  eval "$CMD"
+  
+  echo "✅ Klar: $OUTPUT"
+fi

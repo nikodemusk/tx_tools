@@ -1,0 +1,20 @@
+# Temporära filer
+*.log
+*.aux
+*.out
+*.toc
+*.bbl
+*.blg
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.dvi
+cache/
+temp_*/
+.texput*
+
+# macOS
+.DS_Store
+
+# Linux
+*~
