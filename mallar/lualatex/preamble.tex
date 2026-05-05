@@ -1,0 +1,57 @@
+% preamble.tex – Gemensamma inställningar för LuaLaTeX-dokument
+\ProvidesFile{preamble.tex}[2025-05-04 Gemensam preambel för LuaLaTeX]
+
+% === Dokumentklass ===
+\documentclass[12pt,a4paper]{article}
+
+% === Språk och teckenkodning ===
+\usepackage[swedish, english]{babel}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Termes}
+\setsansfont{TeX Gyre Heros}
+\setmonofont{TeX Gyre Cursor}
+
+% === Typografi ===
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{setspace}
+\onehalfspacing
+
+% === Matematik ===
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{mathtools}
+
+% === Tabeller och figurer ===
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{graphicx}
+\graphicspath{{./bilder/}{./figurer/}}
+\usepackage{caption}
+\usepackage{subcaption}
+
+% === Färger ===
+\usepackage{xcolor}
+\definecolor{maincolor}{RGB}{0, 102, 204}
+
+% === Länkar och referenser ===
+\usepackage[colorlinks=true, linkcolor=maincolor, citecolor=maincolor, urlcolor=maincolor]{hyperref}
+\usepackage{cleveref}
+
+% === Sidhuvud och sidfot ===
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\leftmark}
+\fancyhead[R]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% === Övrigt ===
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes}
+
+% === Egna kommandon ===
+\newcommand{\vect}[1]{\mathbf{#1}}
+\newcommand{\dd}{\mathrm{d}}
