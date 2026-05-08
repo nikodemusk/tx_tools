@@ -1,6 +1,6 @@
 # tx_tools – Personliga CLI-verktyg för LaTeX och PDF
 
-Tre små verktyg för att arbeta med LaTeX och PDF-filer.
+Fyra små verktyg för att arbeta med LaTeX och PDF-filer.
 
 ## Verktyg
 
@@ -58,7 +58,7 @@ tx_exam
 tx_exam -v              # Verbose läge för felsökning
 ```
 
-\textfb{TODO}: Skapa en mall för `exam`-klassen (prov-mall).
+**TODO**: Skapa en mall för `exam`-klassen (prov-mall).
 
 ## Licens
 
