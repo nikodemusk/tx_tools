@@ -3,10 +3,10 @@
 
 set -e
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 AUTHOR="Nikodemus Karlsson"
 
-# Kontrollera att pdfjam finns
+# Kontrollera att pdfjam finns (behövs fortfarande för vissa kommandon)
 if ! command -v pdfjam &> /dev/null; then
     echo "❌ pdfjam saknas!"
     echo ""
@@ -30,7 +30,7 @@ KOMMANDON:
       Ex: $0 reorder dokument.pdf 5,4,3,2,1 omvänd.pdf
   
   merge <output.pdf> <fil1.pdf> <fil2.pdf> ...
-      Slå ihop flera PDF-filer
+      Slå ihop flera PDF-filer (bevarar sidorientering)
       Ex: $0 merge komplett.pdf kap1.pdf kap2.pdf bilaga.pdf
   
   2up <input.pdf> [output.pdf]
@@ -52,6 +52,10 @@ KOMMANDON:
   split <input.pdf> [prefix]
       Dela upp PDF (en fil per sida)
       Ex: $0 split kapitel.pdf sida_
+
+  repair <input.pdf> [output.pdf]
+      Reparera/återställ orientering i PDF
+      Ex: $0 repair skadad.pdf fixad.pdf
 
   info <input.pdf>
       Visa information om PDF:en (antal sidor, etc.)
@@ -85,6 +89,7 @@ EXEMPEL:
   $0 nup bildspel.pdf 4 fyrperark.pdf
   $0 booklet bok.pdf booklet.pdf
   $0 split kapitel.pdf sida_
+  $0 repair skadad.pdf fixad.pdf
   $0 info dokument.pdf
   $0 compress stor.pdf liten.pdf
   $0 compress-all ~/dokument/
@@ -261,6 +266,30 @@ pdf_check_ocr() {
     fi
 }
 
+# Merga med Ghostscript (bevarar orientering)
+pdf_merge_gs() {
+    local output="$1"
+    shift
+    echo "Slår ihop $# filer → $output (bevarar orientering)"
+    gs -sDEVICE=pdfwrite \
+       -dNOPAUSE -dBATCH -dSAFER \
+       -sOutputFile="$output" \
+       "$@" > /dev/null 2>&1
+    echo "✅ Sammanslog $# filer → $output"
+}
+
+# Reparera orientering med Ghostscript
+pdf_repair() {
+    local input="$1"
+    local output="${2:-repaired.pdf}"
+    echo "Reparerar orientering: $input → $output"
+    gs -sDEVICE=pdfwrite \
+       -dNOPAUSE -dBATCH -dSAFER \
+       -sOutputFile="$output" \
+       "$input" > /dev/null 2>&1
+    echo "✅ Reparerade orientering → $output"
+}
+
 # Huvudlogik
 case "$1" in
     extract)
@@ -279,8 +308,7 @@ case "$1" in
     merge)
         OUTPUT="$2"
         shift 2
-        pdfjam "$@" --outfile "$OUTPUT"
-        echo "✅ Sammanslog $# filer → $OUTPUT"
+        pdf_merge_gs "$OUTPUT" "$@"
         ;;
     
     2up)
@@ -363,6 +391,10 @@ case "$1" in
     
     check-ocr)
         pdf_check_ocr "$2"
+        ;;
+    
+    repair)
+        pdf_repair "$2" "$3"
         ;;
     
     --version)
