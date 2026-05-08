@@ -1,0 +1,231 @@
+#!/usr/bin/env bash
+# tx_exam – Bygg både elev- och lärarversion av prov
+
+set -e
+
+VERSION="1.6.0"
+AUTHOR="Nikodemus Karlsson"
+
+# Städa temporär katalog vid avbrott
+cleanup() {
+    if [[ -n "$TEMP_DIR" && -d "$TEMP_DIR" ]]; then
+        rm -rf "$TEMP_DIR"
+    fi
+}
+trap cleanup EXIT INT TERM
+
+usage() {
+    cat << EOF
+tx_exam v$VERSION – Bygg både elev- och lärarversion av prov (exam-klassen)
+
+Användning: 
+  $0 [INPUT] [OUTPUT_DIR]
+
+Argument:
+  INPUT        .tex-fil (default: main.tex)
+  OUTPUT_DIR   Katalog för PDF-filer (default: out)
+
+Alternativ:
+  -v, --verbose  Visa detaljerad utskrift (inklusive felmeddelanden)
+  -h, --help     Visa denna hjälp
+  --version      Visa version
+
+Exempel:
+  $0                       # Bygg main.tex → out/main_elev.pdf + out/main_larare.pdf
+  $0 prov.tex              # Bygg prov.tex → out/prov_elev.pdf + out/prov_larare.pdf
+  $0 -v                    # Verbose läge för felsökning
+EOF
+}
+
+# Defaultvärden
+INPUT="main.tex"
+OUTPUT_DIR="out"
+VERBOSE=false
+
+# Parsa argument
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -v|--verbose)
+            VERBOSE=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --version)
+            echo "tx_exam version $VERSION"
+            exit 0
+            ;;
+        *)
+            if [[ -z "$INPUT_SET" ]]; then
+                INPUT="$1"
+                INPUT_SET=true
+            elif [[ -z "$OUTPUT_SET" ]]; then
+                OUTPUT_DIR="$1"
+                OUTPUT_SET=true
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Spara ursprungskatalogen
+ORIGINAL_DIR="$(pwd)"
+
+# Kontrollera att input-filen finns
+if [[ ! -f "$INPUT" ]]; then
+    echo "❌ Filen '$INPUT' finns inte!"
+    exit 1
+fi
+
+# Skapa output-katalog
+mkdir -p "$OUTPUT_DIR"
+
+# Skapa temporär katalog
+TEMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t 'exam')
+BASENAME=$(basename "$INPUT" .tex)
+
+echo "========================================="
+echo "tx_exam v$VERSION"
+echo "Bygger prov: $BASENAME"
+echo "Output-katalog: $OUTPUT_DIR"
+[[ "$VERBOSE" == true ]] && echo "Verbose läge: PÅ"
+echo "========================================="
+
+# Kopiera alla nödvändiga filer
+echo "📁 Kopierar filer till temp-katalogen..."
+
+cp "$INPUT" "$TEMP_DIR/"
+
+if [[ -f "preamble.tex" ]]; then
+    cp "preamble.tex" "$TEMP_DIR/"
+fi
+
+cp *.sty "$TEMP_DIR/" 2>/dev/null || true
+
+if [[ -d "bilder" ]]; then
+    cp -r "bilder" "$TEMP_DIR/"
+fi
+
+# Skapa out-katalog i temp (viktigt!)
+mkdir -p "$TEMP_DIR/out"
+
+# Funktion för att bygga med felhantering
+bygg_version() {
+    local version_type="$1"      # elev eller larare
+    local tex_file="$2"          # källfil i temp_dir
+    local output_name="$3"       # önskat output-namn
+    
+    echo "📝 Bygger ${version_type}version..."
+    
+    cd "$TEMP_DIR"
+    
+    # Bygg första gången
+    if [[ "$VERBOSE" == true ]]; then
+        echo "  Kör lualatex (första passet)..."
+        if ! lualatex -interaction=nonstopmode -halt-on-error "$tex_file"; then
+            echo "  ❌ ${version_type}version misslyckades!"
+            echo ""
+            echo "  Fel från loggen:"
+            grep -i "error\|!" "$(basename "$tex_file" .tex).log" 2>/dev/null | head -10 || echo "  (kunde inte läsa loggfil)"
+            return 1
+        fi
+    else
+        if ! lualatex -interaction=nonstopmode -halt-on-error "$tex_file" > /dev/null 2>&1; then
+            echo "  ❌ ${version_type}version misslyckades!"
+            echo "  Kör med --verbose för att se felmeddelanden"
+            return 1
+        fi
+    fi
+    
+    # Bygg andra gången
+    if [[ "$VERBOSE" == true ]]; then
+        echo "  Kör lualatex (andra passet)..."
+        lualatex -interaction=nonstopmode -halt-on-error "$tex_file" > /dev/null 2>&1
+    else
+        lualatex -interaction=nonstopmode -halt-on-error "$tex_file" > /dev/null 2>&1
+    fi
+    
+    # Leta efter genererad PDF
+    local pdf_source=""
+    local pdf_basename="$(basename "$tex_file" .tex)"
+    
+    if [[ -f "${pdf_basename}.pdf" ]]; then
+        pdf_source="${pdf_basename}.pdf"
+        echo "  Hittade ${pdf_source} i aktuell katalog"
+    elif [[ -f "out/${pdf_basename}.pdf" ]]; then
+        pdf_source="out/${pdf_basename}.pdf"
+        echo "  Hittade ${pdf_source} i out/-katalogen"
+    fi
+    
+    if [[ -n "$pdf_source" && -f "$pdf_source" ]]; then
+        # Kopiera till målkatalogen
+        cp "$pdf_source" "$ORIGINAL_DIR/$OUTPUT_DIR/${output_name}"
+        echo "  ✅ ${version_type}version → ${output_name}"
+        return 0
+    else
+        echo "  ❌ ${version_type}version misslyckades (ingen PDF skapades)"
+        if [[ -f "${pdf_basename}.log" ]]; then
+            echo "  Sista raderna i loggen:"
+            tail -5 "${pdf_basename}.log"
+        fi
+        return 1
+    fi
+}
+
+# Elevversion (utan answers)
+echo ""
+echo "=== Elevversion (utan svar) ==="
+cp "$TEMP_DIR/${BASENAME}.tex" "$TEMP_DIR/${BASENAME}_elev.tex"
+
+# Ta bort 'answers' om det finns
+perl -pi -e 's/answers,?//g' "$TEMP_DIR/${BASENAME}_elev.tex"
+perl -pi -e 's/,,+/,/g' "$TEMP_DIR/${BASENAME}_elev.tex"
+perl -pi -e 's/\[,/[/g' "$TEMP_DIR/${BASENAME}_elev.tex"
+
+if [[ "$VERBOSE" == true ]]; then
+    echo "  Documentclass-rad:"
+    grep "documentclass" "$TEMP_DIR/${BASENAME}_elev.tex" || echo "  (ingen documentclass-rad hittad)"
+fi
+
+bygg_version "elev" "${BASENAME}_elev.tex" "${BASENAME}_elev.pdf"
+
+# Lärarversion (med answers)
+echo ""
+echo "=== Lärarversion (med svar) ==="
+cp "$TEMP_DIR/${BASENAME}.tex" "$TEMP_DIR/${BASENAME}_larare.tex"
+
+# Lägg till 'answers' i documentclass
+perl -pi -e 's/\\documentclass\[/\\documentclass[answers,/' "$TEMP_DIR/${BASENAME}_larare.tex"
+
+if [[ "$VERBOSE" == true ]]; then
+    echo "  Documentclass-rad:"
+    grep "documentclass" "$TEMP_DIR/${BASENAME}_larare.tex" || echo "  (ingen documentclass-rad hittad)"
+fi
+
+bygg_version "lärar" "${BASENAME}_larare.tex" "${BASENAME}_larare.pdf"
+
+# Städa
+cd "$ORIGINAL_DIR"
+rm -rf "$TEMP_DIR"
+
+echo ""
+echo "========================================="
+
+# Visa resultat
+if [[ -f "$OUTPUT_DIR/${BASENAME}_elev.pdf" ]]; then
+    echo "✅ Elevversion:  $OUTPUT_DIR/${BASENAME}_elev.pdf"
+    ls -lh "$OUTPUT_DIR/${BASENAME}_elev.pdf" | awk '{print "   Storlek: " $5}'
+else
+    echo "❌ Elevversion saknas"
+fi
+
+if [[ -f "$OUTPUT_DIR/${BASENAME}_larare.pdf" ]]; then
+    echo "✅ Lärarversion: $OUTPUT_DIR/${BASENAME}_larare.pdf"
+    ls -lh "$OUTPUT_DIR/${BASENAME}_larare.pdf" | awk '{print "   Storlek: " $5}'
+else
+    echo "❌ Lärarversion saknas"
+fi
+
+echo "========================================="
