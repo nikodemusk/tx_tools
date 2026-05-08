@@ -4,11 +4,11 @@ Fyra små verktyg för att arbeta med LaTeX och PDF-filer.
 
 ## Verktyg
 
-| Kommando | Beskrivning |
-|----------|-------------|
-| `tx_tex` | Bygg LuaLaTeX till PDF eller PNG |
-| `tx_pdf` | Manipulera PDF-filer (merge, 2up, booklet, mm.) |
-| `tx_new` | Skapa nya projekt från mallar (interaktivt) |
+| Kommando  | Beskrivning |
+|-----------|-------------|
+| `tx_tex`  | Bygg LuaLaTeX till PDF eller PNG |
+| `tx_pdf`  | Manipulera PDF-filer (merge, 2up, booklet, mm.) |
+| `tx_new`  | Skapa nya projekt från mallar (interaktivt) |
 | `tx_exam` | Bygg både elev- och lärarversion av prov (exam-klassen) |
 
 ## Installation
@@ -18,6 +18,7 @@ git clone https://github.com/nikodemusk/tx_tools.git
 cd tx_tools
 chmod +x tx_*
 cp tx_* ~/.local/bin/
+```
 
 ## Användning
 
@@ -45,15 +46,19 @@ till undermappar med `main.tex`, `preamble.tex` och `.latexmkrc`.
 
 ```
 # Bygg PDF
+
 tx_tex -i rapport.tex
 
 # Skapa handout med 2 sidor/ark
+
 tx_pdf 2up presentation.pdf handout.pdf
 
 # Skapa nytt projekt
+
 tx_new
 
 # Bygg prov (elev- och lärarversion)
+
 tx_exam
 tx_exam -v              # Verbose läge för felsökning
 ```
