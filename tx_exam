@@ -3,7 +3,7 @@
 
 set -e
 
-VERSION="2.2.0"
+VERSION="2.4.0"
 AUTHOR="Nikodemus Karlsson"
 
 # Städa temporär katalog vid avbrott
@@ -19,30 +19,55 @@ usage() {
 tx_exam v$VERSION – Bygg både elev- och lärarversion av prov (exam-klassen)
 
 Användning: 
-  $0 [INPUT] [OUTPUT_DIR]
-
-Argument:
-  INPUT        .tex-fil (default: main.tex)
-  OUTPUT_DIR   Katalog för PDF-filer (default: out)
+  $0 [ALTERNATIV] [INPUT]
 
 Alternativ:
-  -v, --verbose  Visa detaljerad utskrift (inklusive felmeddelanden)
-  -h, --help     Visa denna hjälp
-  --version      Visa version
+  -i, --input FIL    Input .tex-fil (default: main.tex)
+  -o, --output NAMN  Basnamn för output (default: från .latexmkrc eller input)
+  -d, --output-dir   Output-katalog för PDF (default: out)
+  -c, --clean        Rensa byggfiler (cache-katalogen)
+  -v, --verbose      Visa detaljerad utskrift
+  -h, --help         Visa hjälp
+  --version          Visa version
 
-Obs: Kopierar hela projektkatalogen till temp, så alla filer nås.
-     Temporära filer lagras privat (endast läsbart av användaren).
+Exempel:
+  $0                              # main.tex → out/main_elev.pdf + out/main_larare.pdf
+  $0 -i prov.tex                  # prov.tex → out/prov_elev.pdf + out/prov_larare.pdf
+  $0 -o min_prov                  # main.tex → out/min_prov_elev.pdf + out/min_prov_larare.pdf
+  $0 -c                           # Rensa cache-katalogen (byggfiler)
+  $0 -v                           # Verbose läge för felsökning
+
+Obs: Byggfiler (.log, .aux, etc.) sparas i cache/.
+     Kör $0 -c för att rensa dem när projektet är klart.
 EOF
 }
 
 # Defaultvärden
 INPUT="main.tex"
+OUTPUT_NAME=""
 OUTPUT_DIR="out"
 VERBOSE=false
+CLEAN_MODE=false
 
 # Parsa argument
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        -i|--input)
+            INPUT="$2"
+            shift 2
+            ;;
+        -o|--output)
+            OUTPUT_NAME="$2"
+            shift 2
+            ;;
+        -d|--output-dir)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        -c|--clean)
+            CLEAN_MODE=true
+            shift
+            ;;
         -v|--verbose)
             VERBOSE=true
             shift
@@ -56,18 +81,29 @@ while [[ $# -gt 0 ]]; do
             echo "Författare: $AUTHOR"
             exit 0
             ;;
+        -*)
+            echo "❌ Okänt alternativ: $1"
+            usage
+            exit 1
+            ;;
         *)
-            if [[ -z "$INPUT_SET" ]]; then
-                INPUT="$1"
-                INPUT_SET=true
-            elif [[ -z "$OUTPUT_SET" ]]; then
-                OUTPUT_DIR="$1"
-                OUTPUT_SET=true
-            fi
+            INPUT="$1"
             shift
             ;;
     esac
 done
+
+# Rensningsläge
+if [[ "$CLEAN_MODE" == true ]]; then
+    if [[ -d "cache" ]]; then
+        echo "🧹 Rensar cache-katalogen (byggfiler)..."
+        rm -rf cache
+        echo "✅ Rensning klar"
+    else
+        echo "📭 Ingen cache-katalog att rensa"
+    fi
+    exit 0
+fi
 
 # Spara ursprungskatalogen
 ORIGINAL_DIR="$(pwd)"
@@ -78,20 +114,44 @@ if [[ ! -f "$INPUT" ]]; then
     exit 1
 fi
 
-# Skapa output-katalog
+# Bestäm OUTPUT_NAME med prioriteringsordning:
+# 1. -o flagga
+# 2. $jobname från .latexmkrc (om inte default 'jobname')
+# 3. Basnamn på input-filen
+
+if [[ -z "$OUTPUT_NAME" ]]; then
+    if [[ -f ".latexmkrc" ]]; then
+        # Använd awk för att extrahera värdet mellan citattecken
+        JOBNAME=$(grep -E '^\$jobname' .latexmkrc | head -1 | awk -F"'" '{print $2}')
+        
+        # Använd endast om det inte är tomt eller default-värdet 'jobname'
+        if [[ -n "$JOBNAME" && "$JOBNAME" != "jobname" ]]; then
+            OUTPUT_NAME="$JOBNAME"
+            [[ "$VERBOSE" == true ]] && echo "📖 Läste jobname från .latexmkrc: $OUTPUT_NAME"
+        fi
+    fi
+fi
+
+# Om fortfarande tomt, använd basnamnet på input
+if [[ -z "$OUTPUT_NAME" ]]; then
+    OUTPUT_NAME=$(basename "$INPUT" .tex)
+fi
+
+# Sanera OUTPUT_NAME: ta bort ogiltiga tecken för filnamn
+OUTPUT_NAME=$(echo "$OUTPUT_NAME" | sed 's/[^a-zA-Z0-9_-]//g')
+
+# Skapa output-katalog och cache-katalog
 mkdir -p "$OUTPUT_DIR"
+mkdir -p "cache"
 
 # Skapa privat temporär katalog
 if [[ -n "$TMPDIR" ]]; then
-    # macOS: använd användarens privata temp-katalog
     TEMP_DIR=$(mktemp -d -p "$TMPDIR" 2>/dev/null || mktemp -d)
     chmod 700 "$TEMP_DIR" 2>/dev/null || true
 elif [[ -n "$XDG_RUNTIME_DIR" ]]; then
-    # Linux: använd user runtime directory (privat)
     TEMP_DIR=$(mktemp -d -p "$XDG_RUNTIME_DIR" 2>/dev/null || mktemp -d)
     chmod 700 "$TEMP_DIR" 2>/dev/null || true
 else
-    # Linux-fallback: använd en privat katalog i hemmet
     PRIVATE_TEMP="$HOME/.cache/tx_exam"
     mkdir -p "$PRIVATE_TEMP"
     chmod 700 "$PRIVATE_TEMP" 2>/dev/null || true
@@ -102,47 +162,47 @@ BASENAME=$(basename "$INPUT" .tex)
 
 echo "========================================="
 echo "tx_exam v$VERSION"
-echo "Bygger prov: $BASENAME"
+echo "Input: $INPUT"
+echo "Output-basnamn: $OUTPUT_NAME"
 echo "Output-katalog: $OUTPUT_DIR"
 [[ "$VERBOSE" == true ]] && echo "Verbose läge: PÅ"
-echo "Temp-katalog: $TEMP_DIR"
 echo "========================================="
 
-# Kopiera HELA projektkatalogen (exklusive temporära och output-kataloger)
+# Kopiera HELA projektkatalogen
 echo "📁 Kopierar hela projektet till temp-katalogen..."
 
-# Använd rsync om det finns, annars cp -r med exkluderingar
 if command -v rsync &> /dev/null; then
-    # rsync är mer effektivt och kan exkludera kataloger
     rsync -a --exclude="out" --exclude="cache" --exclude=".git" \
           --exclude="*.log" --exclude="*.aux" --exclude="*.pdf" \
           ./ "$TEMP_DIR/"
 else
-    # fallback till cp -r (kopierar ALLT)
     cp -r . "$TEMP_DIR/"
-    # Städa bort onödiga filer i temp-katalogen
     rm -rf "$TEMP_DIR/out" "$TEMP_DIR/cache" "$TEMP_DIR/.git" 2>/dev/null || true
 fi
 
-# Skapa out-katalog i temp (om den inte redan finns)
+# Skapa cache-katalog i temp för byggfiler
+mkdir -p "$TEMP_DIR/cache"
 mkdir -p "$TEMP_DIR/out"
 
 # Funktion för att bygga med given preamble
 bygg_med_preamble() {
-    local version_type="$1"
-    local preamble_file="$2"
-    local output_name="$3"
+    local version_type="$1"      # elev eller larare
+    local preamble_file="$2"     # vilken preamble-fil som ska användas
+    local output_suffix="$3"     # elev eller larare för filnamn
     
     echo "📝 Bygger ${version_type}version..."
     
     cd "$TEMP_DIR"
     
     # Skapa en modifierad main.tex som pekar på rätt preamble
-    local temp_main="${BASENAME}_${version_type}.tex"
+    local temp_main="${OUTPUT_NAME}_${output_suffix}.tex"
     cp "$INPUT" "$temp_main"
     
     # Ändra \input{preamble} till \input{$preamble_file}
     perl -pi -e "s/\\\\input\{preamble\}/\\\\input{$preamble_file}/" "$temp_main"
+    
+    # Skapa länk till cache-katalogen (för att .latexmkrc ska hitta den)
+    ln -sf "$TEMP_DIR/cache" "$TEMP_DIR/.cache" 2>/dev/null || true
     
     # Bygg första gången
     if [[ "$VERBOSE" == true ]]; then
@@ -183,8 +243,19 @@ bygg_med_preamble() {
     fi
     
     if [[ -n "$pdf_source" && -f "$pdf_source" ]]; then
-        cp "$pdf_source" "$ORIGINAL_DIR/$OUTPUT_DIR/${output_name}"
-        echo "  ✅ ${version_type}version → ${output_name}"
+        # Kopiera PDF till out/
+        cp "$pdf_source" "$ORIGINAL_DIR/$OUTPUT_DIR/${OUTPUT_NAME}_${output_suffix}.pdf"
+        echo "  ✅ ${version_type}version → ${OUTPUT_NAME}_${output_suffix}.pdf"
+        
+        # Kopiera byggfiler (.log, .aux, etc.) till cache/
+        for ext in log aux fls fdb_latexmk; do
+            if [[ -f "${pdf_basename}.${ext}" ]]; then
+                cp "${pdf_basename}.${ext}" "$ORIGINAL_DIR/cache/${OUTPUT_NAME}_${output_suffix}.${ext}" 2>/dev/null || true
+            fi
+        done
+        if [[ "$VERBOSE" == true ]]; then
+            echo "  📄 Byggfiler sparade i cache/"
+        fi
         return 0
     else
         echo "  ❌ ${version_type}version misslyckades (ingen PDF skapades)"
@@ -206,7 +277,7 @@ if [[ "$VERBOSE" == true ]]; then
     grep "documentclass" "$TEMP_DIR/preamble_elev.tex" || echo "  (ingen documentclass-rad hittad)"
 fi
 
-bygg_med_preamble "elev" "preamble_elev.tex" "${BASENAME}_elev.pdf"
+bygg_med_preamble "elev" "preamble_elev.tex" "elev"
 
 # Lärarversion (med answers)
 echo ""
@@ -220,7 +291,7 @@ if [[ "$VERBOSE" == true ]]; then
     grep "documentclass" "$TEMP_DIR/preamble_larare.tex" || echo "  (ingen documentclass-rad hittad)"
 fi
 
-bygg_med_preamble "lärar" "preamble_larare.tex" "${BASENAME}_larare.pdf"
+bygg_med_preamble "lärar" "preamble_larare.tex" "larare"
 
 # Städa
 cd "$ORIGINAL_DIR"
@@ -230,18 +301,22 @@ echo ""
 echo "========================================="
 
 # Visa resultat
-if [[ -f "$OUTPUT_DIR/${BASENAME}_elev.pdf" ]]; then
-    echo "✅ Elevversion:  $OUTPUT_DIR/${BASENAME}_elev.pdf"
-    ls -lh "$OUTPUT_DIR/${BASENAME}_elev.pdf" | awk '{print "   Storlek: " $5}'
+if [[ -f "$OUTPUT_DIR/${OUTPUT_NAME}_elev.pdf" ]]; then
+    echo "✅ Elevversion:  $OUTPUT_DIR/${OUTPUT_NAME}_elev.pdf"
+    ls -lh "$OUTPUT_DIR/${OUTPUT_NAME}_elev.pdf" | awk '{print "   Storlek: " $5}'
 else
     echo "❌ Elevversion saknas"
 fi
 
-if [[ -f "$OUTPUT_DIR/${BASENAME}_larare.pdf" ]]; then
-    echo "✅ Lärarversion: $OUTPUT_DIR/${BASENAME}_larare.pdf"
-    ls -lh "$OUTPUT_DIR/${BASENAME}_larare.pdf" | awk '{print "   Storlek: " $5}'
+if [[ -f "$OUTPUT_DIR/${OUTPUT_NAME}_larare.pdf" ]]; then
+    echo "✅ Lärarversion: $OUTPUT_DIR/${OUTPUT_NAME}_larare.pdf"
+    ls -lh "$OUTPUT_DIR/${OUTPUT_NAME}_larare.pdf" | awk '{print "   Storlek: " $5}'
 else
     echo "❌ Lärarversion saknas"
 fi
+
+echo ""
+echo "💡 Byggfiler sparades i cache/"
+echo "   Rensa med: tx_exam -c"
 
 echo "========================================="
