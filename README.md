@@ -1,6 +1,6 @@
 # tx_tools – Personliga CLI-verktyg för LaTeX och PDF
 
-Fyra små verktyg för att arbeta med LaTeX och PDF-filer.
+Fyra små verktyg för att arbeta med LaTeX- och PDF-filer.
 
 ## Verktyg
 
@@ -40,7 +40,8 @@ tx_new --help
 ## Mallar
 
 `tx_new` använder mallar från katalogen `mallar`. Skapa egna genom att lägga
-till undermappar med `main.tex`, `preamble.tex` och `.latexmkrc`.
+till undermappar med `main.tex`, `preamble.tex` och `.latexmkrc`. Mallar
+kopieras rekursivt.
 
 ## Exempel
 
@@ -63,7 +64,22 @@ tx_exam
 tx_exam -v              # Verbose läge för felsökning
 ```
 
-**TODO**: Skapa en mall för `exam`-klassen (prov-mall).
+## Säkerhet
+
+### `tx_exam` – Privat temp-katalog
+
+`tx_exam` använder en **privat temporär katalog** för byggprocessen. Kopior av
+dina filer läggs aldrig i systemets publika `/tmp`.
+
+| System | Temp-katalog | Läsbarhet |
+|--------|--------------|-----------|
+| **macOS** | `$TMPDIR` (användarspecifik) | Endast användaren |
+| **Linux (med XDG_RUNTIME_DIR)** | `$XDG_RUNTIME_DIR` | Endast användaren |
+| **Linux (fallback)** | `~/.cache/tx_exam/` | Endast användaren |
+
+## TODO
+
+* Skapa en mall för `exam`-klassen (prov-mall).
 
 ## Licens
 

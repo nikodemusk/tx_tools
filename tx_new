@@ -3,7 +3,8 @@
 
 set -e
 
-VERSION="1.0.0"
+VERSION="1.1.0"
+AUTHOR="Nikodemus Karlsson"
 
 # Färger för utskrift
 RED='\033[0;31m'
@@ -70,30 +71,7 @@ EXEMPEL:
   $0 --mall 1 --namn projekt     # Välj mall med nummer
   $0 lualatex projekt            # Kort form
   $0 --list                      # Visa alla mallar
-
-TILLGÄNGLIGA MALLAR:
 EOF
-    
-    # Lista mallar med nummer
-    local mallar=()
-    while IFS= read -r mall; do
-        mallar+=("$mall")
-    done < <(get_mall_lista)
-    
-    if [[ ${#mallar[@]} -eq 0 ]]; then
-        echo "  (inga mallar hittades)"
-    else
-        for i in "${!mallar[@]}"; do
-            local num=$((i+1))
-            local mall="${mallar[$i]}"
-            printf "  %2d. %s\n" "$num" "$mall"
-            # Visa beskrivning om README finns
-            if [[ -f "$MALLAR_DIR/$mall/README.md" ]]; then
-                local desc=$(head -1 "$MALLAR_DIR/$mall/README.md")
-                echo "      └─ $desc"
-            fi
-        done
-    fi
 }
 
 list_mallar() {
@@ -109,10 +87,6 @@ list_mallar() {
     
     if [[ ${#mallar[@]} -eq 0 ]]; then
         echo -e "${RED}❌ Inga mallar hittades i $MALLAR_DIR${NC}"
-        echo ""
-        echo "Skapa en mallkatalog, t.ex.:"
-        echo "  mkdir -p $MALLAR_DIR/lualatex"
-        echo "  # Lägg till main.tex, preamble.tex, .latexmkrc"
         return 1
     fi
     
@@ -139,18 +113,16 @@ list_mallar() {
 validera_mall() {
     local input="$1"
     
-    # Hämta lista över mallar
     local mallar=()
     while IFS= read -r mall; do
         mallar+=("$mall")
     done < <(get_mall_lista)
     
     if [[ ${#mallar[@]} -eq 0 ]]; then
-        echo -e "${RED}❌ Inga mallar tillgängliga.${NC}"
+        echo -e "${RED}❌ Inga mallar tillgängliga.${NC}" >&2
         exit 1
     fi
     
-    # Kolla om input är ett nummer
     if [[ "$input" =~ ^[0-9]+$ ]]; then
         local num=$((input - 1))
         if [[ $num -ge 0 && $num -lt ${#mallar[@]} ]]; then
@@ -161,7 +133,6 @@ validera_mall() {
             return 1
         fi
     else
-        # Kolla om det är ett giltigt mallnamn
         for mall in "${mallar[@]}"; do
             if [[ "$mall" == "$input" ]]; then
                 echo "$mall"
@@ -177,19 +148,16 @@ validera_mall() {
 validera_projektnamn() {
     local namn="$1"
     
-    # Kontrollera att namnet inte är tomt
     if [[ -z "$namn" ]]; then
         echo -e "${RED}❌ Projektnamn får inte vara tomt.${NC}" >&2
         return 1
     fi
     
-    # Kontrollera att namnet inte innehåller ogiltiga tecken
     if [[ ! "$namn" =~ ^[a-zA-Z0-9_-]+$ ]]; then
         echo -e "${RED}❌ Ogiltigt projektnamn. Använd endast bokstäver, siffror, bindestreck och understreck.${NC}" >&2
         return 1
     fi
     
-    # Kontrollera att katalogen inte redan finns
     if [[ -d "$namn" ]]; then
         echo -e "${RED}❌ Katalogen '$namn' finns redan.${NC}" >&2
         return 1
@@ -206,7 +174,6 @@ interactive_mode() {
     echo -e "${BLUE}════════════════════════════════════════════${NC}"
     echo ""
     
-    # Visa mallar med nummer
     local mallar=()
     while IFS= read -r mall; do
         mallar+=("$mall")
@@ -227,7 +194,6 @@ interactive_mode() {
         local num=$((i+1))
         local mall="${mallar[$i]}"
         printf "  ${GREEN}%2d${NC}) %s\n" "$num" "$mall"
-        # Visa beskrivning om README finns
         if [[ -f "$MALLAR_DIR/$mall/README.md" ]]; then
             local desc=$(head -1 "$MALLAR_DIR/$mall/README.md")
             echo "      └─ $desc"
@@ -235,7 +201,6 @@ interactive_mode() {
     done
     echo ""
     
-    # Läs in val med felhantering
     local mall_vald=""
     while [[ -z "$mall_vald" ]]; do
         read -p "Ditt val (1-${#mallar[@]}): " val
@@ -252,7 +217,6 @@ interactive_mode() {
     
     echo ""
     
-    # Fråga efter projektnamn
     local projektnamn_valt=""
     while [[ -z "$projektnamn_valt" ]]; do
         read -p "📁 Projektnamn (skapa katalog): " projektnamn
@@ -261,7 +225,7 @@ interactive_mode() {
         if validera_projektnamn "$projektnamn" > /dev/null 2>&1; then
             projektnamn_valt="$projektnamn"
         else
-            validera_projektnamn "$projektnamn"  # Visar felmeddelandet
+            validera_projektnamn "$projektnamn"
             echo ""
         fi
     done
@@ -269,18 +233,16 @@ interactive_mode() {
     echo -e "${GREEN}✓ Projektnamn: $projektnamn_valt${NC}"
     echo ""
     
-    # Fråga om bekräftelse
     read -p "Skapa projektet? (J/n): " bekraftelse
     if [[ "$bekraftelse" =~ ^[Nn]$ ]]; then
         echo -e "${YELLOW}🛑 Avbruten.${NC}"
         exit 0
     fi
     
-    # Skapa projektet
     kopiera_mall "$mall_vald" "$projektnamn_valt"
 }
 
-# Kopiera mall
+# Kopiera mall (rekursivt, hela katalogträdet)
 kopiera_mall() {
     local mall="$1"
     local projektnamn="$2"
@@ -288,33 +250,22 @@ kopiera_mall() {
     
     echo -e "${GREEN}📁 Skapar nytt projekt: $projektnamn${NC}"
     
-    # Skapa projektkatalogen
-    mkdir -p "$projektnamn"
-    
-    # Kopiera mallfiler
+    # Kopiera hela mallkatalogen rekursivt (inklusive undermappar och dolda filer)
     echo -e "${BLUE}📄 Kopierar mallfiler från '$mall'...${NC}"
     
-    # Kopiera alla filer (inklusive punktfiler)
-    shopt -s dotglob
-    for fil in "$mall_path"/*; do
-        if [[ -f "$fil" ]]; then
-            cp "$fil" "$projektnamn/"
-        fi
-    done
-    shopt -u dotglob
-    
-    # Skapa nödvändiga undermappar baserat på .latexmkrc
-    if [[ -f "$projektnamn/.latexmkrc" ]]; then
-        # Läs out_dir från .latexmkrc
-        local out_dir=$(grep -E '^\$out_dir' "$projektnamn/.latexmkrc" | sed -E "s/\\\$out_dir\s*=\s*['\"]?([^'\";]+)['\"]?;.*/\1/" | xargs)
-        local aux_dir=$(grep -E '^\$aux_dir' "$projektnamn/.latexmkrc" | sed -E "s/\\\$aux_dir\s*=\s*['\"]?([^'\";]+)['\"]?;.*/\1/" | xargs)
-        
-        [[ -n "$out_dir" ]] && mkdir -p "$projektnamn/${out_dir}"
-        [[ -n "$aux_dir" ]] && mkdir -p "$projektnamn/${aux_dir}"
+    # Använd rsync om det finns (bättre för rekursiv kopiering)
+    if command -v rsync &> /dev/null; then
+        rsync -a --exclude=".git" "$mall_path/" "$projektnamn/"
+    else
+        # Fallback: cp -r (kopierar rekursivt)
+        cp -r "$mall_path/"* "$projektnamn/" 2>/dev/null || true
+        # Kopiera dolda filer (.latexmkrc etc.)
+        cp -r "$mall_path"/.[!.]* "$projektnamn/" 2>/dev/null || true
     fi
     
-    # Skapa bildkatalog för bekvämlighet
-    mkdir -p "$projektnamn/bilder"
+    # Skapa standardkataloger (om de inte redan finns i mallen)
+    mkdir -p "$projektnamn/out"
+    mkdir -p "$projektnamn/cache"
     
     echo -e "${GREEN}✅ Projekt skapat: $projektnamn${NC}"
     echo ""
@@ -324,7 +275,7 @@ kopiera_mall() {
     echo "  tx_tex -w                 # Live-läge"
     echo ""
     echo -e "${YELLOW}📁 Projektstruktur:${NC}"
-    ls -la "$projektnamn" 2>/dev/null | tail -n +4 | awk '{print "  " $9}' | grep -v "^$" | head -10
+    find "$projektnamn" -type f -name "*.tex" -o -name ".latexmkrc" -o -type d | head -15 | sed "s|$projektnamn/|  |"
 }
 
 # Parsa argument
@@ -352,6 +303,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --version)
             echo "tx_new version $VERSION"
+            echo "Författare: $AUTHOR"
             exit 0
             ;;
         -h|--help)
@@ -364,7 +316,6 @@ while [[ $# -gt 0 ]]; do
             exit 1
             ;;
         *)
-            # Kort form: tx_new mall projektnamn
             if [[ -z "$MALL" ]]; then
                 MALL="$1"
                 shift
@@ -384,7 +335,6 @@ done
 if [[ "$INTERACTIVE" == true ]]; then
     interactive_mode
 elif [[ -n "$MALL" && -n "$PROJEKTNAMN" ]]; then
-    # Validera mall och projektnamn
     VALID_MALL=$(validera_mall "$MALL")
     if [[ $? -ne 0 ]]; then
         echo ""
@@ -404,6 +354,5 @@ elif [[ -n "$MALL" && -z "$PROJEKTNAMN" ]]; then
     echo "Användning: $0 --mall $MALL --namn mitt-projekt"
     exit 1
 else
-    # Default: interaktivt läge
     interactive_mode
 fi
