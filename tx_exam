@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# tx_exam – Bygg både elev- och lärarversion av prov
+# tx_exam – Bygg både elev- och lärarversion av prov (exam-klassen)
 
 set -e
 
-VERSION="1.6.0"
+VERSION="2.0.0"
 AUTHOR="Nikodemus Karlsson"
 
 # Städa temporär katalog vid avbrott
@@ -30,10 +30,7 @@ Alternativ:
   -h, --help     Visa denna hjälp
   --version      Visa version
 
-Exempel:
-  $0                       # Bygg main.tex → out/main_elev.pdf + out/main_larare.pdf
-  $0 prov.tex              # Bygg prov.tex → out/prov_elev.pdf + out/prov_larare.pdf
-  $0 -v                    # Verbose läge för felsökning
+Obs: Förutsätter att \documentclass finns i preamble.tex
 EOF
 }
 
@@ -55,6 +52,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --version)
             echo "tx_exam version $VERSION"
+            echo "Författare: $AUTHOR"
             exit 0
             ;;
         *)
@@ -76,6 +74,13 @@ ORIGINAL_DIR="$(pwd)"
 # Kontrollera att input-filen finns
 if [[ ! -f "$INPUT" ]]; then
     echo "❌ Filen '$INPUT' finns inte!"
+    exit 1
+fi
+
+# Kontrollera att preamble.tex finns
+if [[ ! -f "preamble.tex" ]]; then
+    echo "❌ Filen 'preamble.tex' finns inte!"
+    echo "   Documentclass måste finnas i preamble.tex"
     exit 1
 fi
 
@@ -108,31 +113,38 @@ if [[ -d "bilder" ]]; then
     cp -r "bilder" "$TEMP_DIR/"
 fi
 
-# Skapa out-katalog i temp (viktigt!)
+# Skapa out-katalog i temp
 mkdir -p "$TEMP_DIR/out"
 
-# Funktion för att bygga med felhantering
-bygg_version() {
+# Funktion för att bygga med given preamble
+bygg_med_preamble() {
     local version_type="$1"      # elev eller larare
-    local tex_file="$2"          # källfil i temp_dir
+    local preamble_file="$2"     # vilken preamble-fil som ska användas
     local output_name="$3"       # önskat output-namn
     
     echo "📝 Bygger ${version_type}version..."
     
     cd "$TEMP_DIR"
     
+    # Skapa en modifierad main.tex som pekar på rätt preamble
+    local temp_main="${BASENAME}_${version_type}.tex"
+    cp "$INPUT" "$temp_main"
+    
+    # Ändra \input{preamble} till \input{$preamble_file}
+    perl -pi -e "s/\\\\input\{preamble\}/\\\\input{$preamble_file}/" "$temp_main"
+    
     # Bygg första gången
     if [[ "$VERBOSE" == true ]]; then
         echo "  Kör lualatex (första passet)..."
-        if ! lualatex -interaction=nonstopmode -halt-on-error "$tex_file"; then
+        if ! lualatex -interaction=nonstopmode -halt-on-error "$temp_main"; then
             echo "  ❌ ${version_type}version misslyckades!"
             echo ""
             echo "  Fel från loggen:"
-            grep -i "error\|!" "$(basename "$tex_file" .tex).log" 2>/dev/null | head -10 || echo "  (kunde inte läsa loggfil)"
+            grep -i "error\|!" "$(basename "$temp_main" .tex).log" 2>/dev/null | head -10
             return 1
         fi
     else
-        if ! lualatex -interaction=nonstopmode -halt-on-error "$tex_file" > /dev/null 2>&1; then
+        if ! lualatex -interaction=nonstopmode -halt-on-error "$temp_main" > /dev/null 2>&1; then
             echo "  ❌ ${version_type}version misslyckades!"
             echo "  Kör med --verbose för att se felmeddelanden"
             return 1
@@ -142,14 +154,14 @@ bygg_version() {
     # Bygg andra gången
     if [[ "$VERBOSE" == true ]]; then
         echo "  Kör lualatex (andra passet)..."
-        lualatex -interaction=nonstopmode -halt-on-error "$tex_file" > /dev/null 2>&1
+        lualatex -interaction=nonstopmode -halt-on-error "$temp_main" > /dev/null 2>&1
     else
-        lualatex -interaction=nonstopmode -halt-on-error "$tex_file" > /dev/null 2>&1
+        lualatex -interaction=nonstopmode -halt-on-error "$temp_main" > /dev/null 2>&1
     fi
     
     # Leta efter genererad PDF
     local pdf_source=""
-    local pdf_basename="$(basename "$tex_file" .tex)"
+    local pdf_basename="$(basename "$temp_main" .tex)"
     
     if [[ -f "${pdf_basename}.pdf" ]]; then
         pdf_source="${pdf_basename}.pdf"
@@ -160,16 +172,11 @@ bygg_version() {
     fi
     
     if [[ -n "$pdf_source" && -f "$pdf_source" ]]; then
-        # Kopiera till målkatalogen
         cp "$pdf_source" "$ORIGINAL_DIR/$OUTPUT_DIR/${output_name}"
         echo "  ✅ ${version_type}version → ${output_name}"
         return 0
     else
         echo "  ❌ ${version_type}version misslyckades (ingen PDF skapades)"
-        if [[ -f "${pdf_basename}.log" ]]; then
-            echo "  Sista raderna i loggen:"
-            tail -5 "${pdf_basename}.log"
-        fi
         return 1
     fi
 }
@@ -177,34 +184,34 @@ bygg_version() {
 # Elevversion (utan answers)
 echo ""
 echo "=== Elevversion (utan svar) ==="
-cp "$TEMP_DIR/${BASENAME}.tex" "$TEMP_DIR/${BASENAME}_elev.tex"
+cp "$TEMP_DIR/preamble.tex" "$TEMP_DIR/preamble_elev.tex"
 
 # Ta bort 'answers' om det finns
-perl -pi -e 's/answers,?//g' "$TEMP_DIR/${BASENAME}_elev.tex"
-perl -pi -e 's/,,+/,/g' "$TEMP_DIR/${BASENAME}_elev.tex"
-perl -pi -e 's/\[,/[/g' "$TEMP_DIR/${BASENAME}_elev.tex"
+perl -pi -e 's/answers,?//g' "$TEMP_DIR/preamble_elev.tex"
+perl -pi -e 's/,,+/,/g' "$TEMP_DIR/preamble_elev.tex"
+perl -pi -e 's/\[,/[/g' "$TEMP_DIR/preamble_elev.tex"
 
 if [[ "$VERBOSE" == true ]]; then
-    echo "  Documentclass-rad:"
-    grep "documentclass" "$TEMP_DIR/${BASENAME}_elev.tex" || echo "  (ingen documentclass-rad hittad)"
+    echo "  Documentclass-rad i preamble_elev.tex:"
+    grep "documentclass" "$TEMP_DIR/preamble_elev.tex" || echo "  (ingen documentclass-rad hittad)"
 fi
 
-bygg_version "elev" "${BASENAME}_elev.tex" "${BASENAME}_elev.pdf"
+bygg_med_preamble "elev" "preamble_elev.tex" "${BASENAME}_elev.pdf"
 
 # Lärarversion (med answers)
 echo ""
 echo "=== Lärarversion (med svar) ==="
-cp "$TEMP_DIR/${BASENAME}.tex" "$TEMP_DIR/${BASENAME}_larare.tex"
+cp "$TEMP_DIR/preamble.tex" "$TEMP_DIR/preamble_larare.tex"
 
 # Lägg till 'answers' i documentclass
-perl -pi -e 's/\\documentclass\[/\\documentclass[answers,/' "$TEMP_DIR/${BASENAME}_larare.tex"
+perl -pi -e 's/\\documentclass\[/\\documentclass[answers,/' "$TEMP_DIR/preamble_larare.tex"
 
 if [[ "$VERBOSE" == true ]]; then
-    echo "  Documentclass-rad:"
-    grep "documentclass" "$TEMP_DIR/${BASENAME}_larare.tex" || echo "  (ingen documentclass-rad hittad)"
+    echo "  Documentclass-rad i preamble_larare.tex:"
+    grep "documentclass" "$TEMP_DIR/preamble_larare.tex" || echo "  (ingen documentclass-rad hittad)"
 fi
 
-bygg_version "lärar" "${BASENAME}_larare.tex" "${BASENAME}_larare.pdf"
+bygg_med_preamble "lärar" "preamble_larare.tex" "${BASENAME}_larare.pdf"
 
 # Städa
 cd "$ORIGINAL_DIR"
