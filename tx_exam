@@ -3,7 +3,7 @@
 
 set -e
 
-VERSION="2.0.0"
+VERSION="2.2.0"
 AUTHOR="Nikodemus Karlsson"
 
 # Städa temporär katalog vid avbrott
@@ -30,7 +30,8 @@ Alternativ:
   -h, --help     Visa denna hjälp
   --version      Visa version
 
-Obs: Förutsätter att \documentclass finns i preamble.tex
+Obs: Kopierar hela projektkatalogen till temp, så alla filer nås.
+     Temporära filer lagras privat (endast läsbart av användaren).
 EOF
 }
 
@@ -77,18 +78,26 @@ if [[ ! -f "$INPUT" ]]; then
     exit 1
 fi
 
-# Kontrollera att preamble.tex finns
-if [[ ! -f "preamble.tex" ]]; then
-    echo "❌ Filen 'preamble.tex' finns inte!"
-    echo "   Documentclass måste finnas i preamble.tex"
-    exit 1
-fi
-
 # Skapa output-katalog
 mkdir -p "$OUTPUT_DIR"
 
-# Skapa temporär katalog
-TEMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t 'exam')
+# Skapa privat temporär katalog
+if [[ -n "$TMPDIR" ]]; then
+    # macOS: använd användarens privata temp-katalog
+    TEMP_DIR=$(mktemp -d -p "$TMPDIR" 2>/dev/null || mktemp -d)
+    chmod 700 "$TEMP_DIR" 2>/dev/null || true
+elif [[ -n "$XDG_RUNTIME_DIR" ]]; then
+    # Linux: använd user runtime directory (privat)
+    TEMP_DIR=$(mktemp -d -p "$XDG_RUNTIME_DIR" 2>/dev/null || mktemp -d)
+    chmod 700 "$TEMP_DIR" 2>/dev/null || true
+else
+    # Linux-fallback: använd en privat katalog i hemmet
+    PRIVATE_TEMP="$HOME/.cache/tx_exam"
+    mkdir -p "$PRIVATE_TEMP"
+    chmod 700 "$PRIVATE_TEMP" 2>/dev/null || true
+    TEMP_DIR=$(mktemp -d -p "$PRIVATE_TEMP" 2>/dev/null || mktemp -d)
+fi
+
 BASENAME=$(basename "$INPUT" .tex)
 
 echo "========================================="
@@ -96,31 +105,33 @@ echo "tx_exam v$VERSION"
 echo "Bygger prov: $BASENAME"
 echo "Output-katalog: $OUTPUT_DIR"
 [[ "$VERBOSE" == true ]] && echo "Verbose läge: PÅ"
+echo "Temp-katalog: $TEMP_DIR"
 echo "========================================="
 
-# Kopiera alla nödvändiga filer
-echo "📁 Kopierar filer till temp-katalogen..."
+# Kopiera HELA projektkatalogen (exklusive temporära och output-kataloger)
+echo "📁 Kopierar hela projektet till temp-katalogen..."
 
-cp "$INPUT" "$TEMP_DIR/"
-
-if [[ -f "preamble.tex" ]]; then
-    cp "preamble.tex" "$TEMP_DIR/"
+# Använd rsync om det finns, annars cp -r med exkluderingar
+if command -v rsync &> /dev/null; then
+    # rsync är mer effektivt och kan exkludera kataloger
+    rsync -a --exclude="out" --exclude="cache" --exclude=".git" \
+          --exclude="*.log" --exclude="*.aux" --exclude="*.pdf" \
+          ./ "$TEMP_DIR/"
+else
+    # fallback till cp -r (kopierar ALLT)
+    cp -r . "$TEMP_DIR/"
+    # Städa bort onödiga filer i temp-katalogen
+    rm -rf "$TEMP_DIR/out" "$TEMP_DIR/cache" "$TEMP_DIR/.git" 2>/dev/null || true
 fi
 
-cp *.sty "$TEMP_DIR/" 2>/dev/null || true
-
-if [[ -d "bilder" ]]; then
-    cp -r "bilder" "$TEMP_DIR/"
-fi
-
-# Skapa out-katalog i temp
+# Skapa out-katalog i temp (om den inte redan finns)
 mkdir -p "$TEMP_DIR/out"
 
 # Funktion för att bygga med given preamble
 bygg_med_preamble() {
-    local version_type="$1"      # elev eller larare
-    local preamble_file="$2"     # vilken preamble-fil som ska användas
-    local output_name="$3"       # önskat output-namn
+    local version_type="$1"
+    local preamble_file="$2"
+    local output_name="$3"
     
     echo "📝 Bygger ${version_type}version..."
     
@@ -186,7 +197,6 @@ echo ""
 echo "=== Elevversion (utan svar) ==="
 cp "$TEMP_DIR/preamble.tex" "$TEMP_DIR/preamble_elev.tex"
 
-# Ta bort 'answers' om det finns
 perl -pi -e 's/answers,?//g' "$TEMP_DIR/preamble_elev.tex"
 perl -pi -e 's/,,+/,/g' "$TEMP_DIR/preamble_elev.tex"
 perl -pi -e 's/\[,/[/g' "$TEMP_DIR/preamble_elev.tex"
@@ -203,7 +213,6 @@ echo ""
 echo "=== Lärarversion (med svar) ==="
 cp "$TEMP_DIR/preamble.tex" "$TEMP_DIR/preamble_larare.tex"
 
-# Lägg till 'answers' i documentclass
 perl -pi -e 's/\\documentclass\[/\\documentclass[answers,/' "$TEMP_DIR/preamble_larare.tex"
 
 if [[ "$VERBOSE" == true ]]; then
