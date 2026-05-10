@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# tx_count – Räkna ord i textfiler (med stöd för radintervall)
+
+set -e
+
+VERSION="1.0.0"
+AUTHOR="Nikodemus Karlsson"
+
+usage() {
+    cat << EOF
+tx_count v$VERSION – Räkna ord i textfiler
+
+Användning: 
+  $0 [ALTERNATIV] FIL
+
+Alternativ:
+  -l, --lines INTERVAL  Radintervall (t.ex. 10-20, 5-10, 15-)
+  -w, --words           Räkna ord (default)
+  -c, --chars           Räkna tecken
+  -L, --max-line-length Visa längsta radens längd
+  -h, --help            Visa hjälp
+  --version             Visa version
+
+INTERVAL-FORMAT:
+  N-M     Rad N till och med rad M
+  N-      Från rad N till slutet av filen
+  -M      Från början till och med rad M
+
+EXEMPEL:
+  $0 main.tex                    # Räkna alla ord
+  $0 -l 10-20 main.tex           # Räkna ord på rad 10-20
+  $0 -l 5- main.tex              # Räkna ord från rad 5 till slutet
+  $0 -l -30 main.tex             # Räkna ord på rad 1-30
+  $0 -c -l 10-20 main.tex        # Räkna tecken på rad 10-20
+  $0 -L main.tex                 # Visa längsta radens längd
+EOF
+}
+
+# Defaultvärden
+FILE=""
+LINES=""
+MODE="words"  # words, chars, max-line
+
+# Parsa argument
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -l|--lines)
+            LINES="$2"
+            shift 2
+            ;;
+        -w|--words)
+            MODE="words"
+            shift
+            ;;
+        -c|--chars)
+            MODE="chars"
+            shift
+            ;;
+        -L|--max-line-length)
+            MODE="max-line"
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --version)
+            echo "tx_count version $VERSION"
+            echo "Författare: $AUTHOR"
+            exit 0
+            ;;
+        -*)
+            echo "❌ Okänt alternativ: $1"
+            usage
+            exit 1
+            ;;
+        *)
+            FILE="$1"
+            shift
+            ;;
+    esac
+done
+
+# Kontrollera att fil angavs
+if [[ -z "$FILE" ]]; then
+    echo "❌ Ingen fil angiven!"
+    usage
+    exit 1
+fi
+
+# Kontrollera att filen finns
+if [[ ! -f "$FILE" ]]; then
+    echo "❌ Filen '$FILE' finns inte!"
+    exit 1
+fi
+
+# Bygg sed-intervallet
+if [[ -n "$LINES" ]]; then
+    # Konvertera t.ex. "10-20" till "10,20" för sed
+    START=$(echo "$LINES" | cut -d'-' -f1)
+    END=$(echo "$LINES" | cut -d'-' -f2)
+    
+    if [[ -z "$START" && -n "$END" ]]; then
+        # Format: -M (från början till rad M)
+        SED_ADDRESS="1,${END}"
+    elif [[ -n "$START" && -z "$END" ]]; then
+        # Format: N- (från rad N till slutet)
+        SED_ADDRESS="${START},\$"
+    else
+        # Format: N-M
+        SED_ADDRESS="${START},${END}"
+    fi
+    
+    SED_CMD="sed -n '${SED_ADDRESS}p'"
+else
+    SED_CMD="cat"
+fi
+
+# Utför räkning baserat på läge
+case "$MODE" in
+    words)
+        echo -n "Antal ord: "
+        if [[ -n "$LINES" ]]; then
+            eval "$SED_CMD \"$FILE\" | wc -w"
+        else
+            wc -w < "$FILE"
+        fi
+        ;;
+    chars)
+        echo -n "Antal tecken: "
+        if [[ -n "$LINES" ]]; then
+            eval "$SED_CMD \"$FILE\" | wc -c | tr -d ' '"
+        else
+            wc -c < "$FILE" | tr -d ' '
+        fi
+        ;;
+    max-line)
+        echo -n "Längsta radens längd: "
+        if [[ -n "$LINES" ]]; then
+            eval "$SED_CMD \"$FILE\" | wc -L"
+        else
+            wc -L < "$FILE"
+        fi
+        ;;
+esac
+
+exit 0
