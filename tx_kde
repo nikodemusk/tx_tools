@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# tx_kde – Hantera KDE-session (omstart av plasmashell eller utloggning)
+
+set -e
+
+VERSION="1.0.0"
+AUTHOR="Nikodemus Karlsson"
+
+usage() {
+    cat << EOF
+tx_kde v$VERSION – Hantera KDE-session (omstart eller utloggning)
+
+Användning: 
+  $0 [ALTERNATIV]
+
+Alternativ:
+  -r, --restart      Starta om plasmashell (snabbast, men fungerar inte alltid)
+  -l, --logout       Logga ut från KDE (fungerar alltid, men stänger alla program)
+  -y, --yes          Hoppa över bekräftelse (använd med försiktighet!)
+  -h, --help         Visa denna hjälp
+  --version          Visa version
+
+Utan alternativ öppnas interaktiv meny.
+
+EXEMPEL:
+  $0                 # Interaktiv meny (välj åtgärd)
+  $0 -r              # Starta om plasmashell (med bekräftelse)
+  $0 -r -y           # Starta om plasmashell direkt (utan bekräftelse)
+  $0 -l              # Logga ut från KDE (med bekräftelse)
+  $0 -l -y           # Logga ut direkt
+
+OBS! Utloggning avslutar ALLA program och stänger sessionen.
+     Omstart av plasmashell påverkar endast skrivbordsmiljön.
+EOF
+}
+
+# ============================================
+# PLATTFORMKONTROLL – endast Linux med KDE
+# ============================================
+
+# Kontrollera att vi är på Linux
+if [[ "$(uname)" != "Linux" ]]; then
+    echo "❌ tx_kde är endast för Linux (KDE-skrivbord)."
+    echo "   Detta system kör: $(uname)"
+    echo "   Skriptet avslutas."
+    exit 1
+fi
+
+# Kontrollera att vi är i en KDE-miljö (leta efter KDE-specifika indikatorer)
+if [[ -z "$XDG_CURRENT_DESKTOP" ]]; then
+    echo "⚠️  XDG_CURRENT_DESKTOP är inte satt."
+elif [[ "$XDG_CURRENT_DESKTOP" != *"KDE"* ]]; then
+    echo "❌ tx_kde är endast för KDE-skrivbord."
+    echo "   Aktuell skrivbordsmiljö: ${XDG_CURRENT_DESKTOP:-okänd}"
+    echo "   Skriptet avslutas."
+    exit 1
+fi
+
+# Kontrollera att plasmashell eller KDE-specifika kommandon finns
+if ! command -v plasmashell &> /dev/null && ! command -v kwin_x11 &> /dev/null; then
+    echo "❌ tx_kde kräver en KDE-miljö."
+    echo "   Varken plasmashell eller kwin_x11 hittades."
+    echo "   Skriptet avslutas."
+    exit 1
+fi
+
+# ============================================
+# HUVUDSKRIPT
+# ============================================
+
+# Defaultvärden
+ACTION=""
+FORCE=false
+
+# Parsa argument
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -r|--restart)
+            ACTION="restart"
+            shift
+            ;;
+        -l|--logout)
+            ACTION="logout"
+            shift
+            ;;
+        -y|--yes)
+            FORCE=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --version)
+            echo "tx_kde version $VERSION"
+            echo "Författare: $AUTHOR"
+            exit 0
+            ;;
+        *)
+            echo "❌ Okänt alternativ: $1"
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+# Kontrollera qdbus (behövs för utloggning)
+if [[ "$ACTION" == "logout" || -z "$ACTION" ]]; then
+    if ! command -v qdbus &> /dev/null; then
+        echo "❌ qdbus saknas. Utloggning fungerar inte."
+        echo "Försök: sudo apt install qt5-tools (eller motsvarande)"
+        if [[ "$ACTION" == "logout" ]]; then
+            exit 1
+        else
+            echo "⚠️  Endast omstart av plasmashell är tillgänglig."
+            ACTION="restart"
+        fi
+    fi
+fi
+
+# Interaktiv meny (om ingen åtgärd valts)
+if [[ -z "$ACTION" ]]; then
+    echo ""
+    echo "════════════════════════════════════════════"
+    echo "         tx_kde - KDE-hantering"
+    echo "════════════════════════════════════════════"
+    echo ""
+    echo "Välj åtgärd:"
+    echo "  1) Starta om plasmashell (snabbast)"
+    echo "  2) Logga ut från KDE (fungerar alltid)"
+    echo "  0) Avbryt"
+    echo ""
+    read -p "Ditt val (0-2): " val
+    
+    case "$val" in
+        1)
+            ACTION="restart"
+            ;;
+        2)
+            ACTION="logout"
+            ;;
+        0)
+            echo "✅ Avbruten."
+            exit 0
+            ;;
+        *)
+            echo "❌ Ogiltigt val. Avbryter."
+            exit 1
+            ;;
+    esac
+fi
+
+# Bekräftelse (om inte force)
+if [[ "$FORCE" == false ]]; then
+    echo ""
+    if [[ "$ACTION" == "restart" ]]; then
+        echo "⚠️  Detta kommer att starta om plasmashell (KDE-skrivbordet)."
+        echo "    Dina program förblir öppna, men skrivbordet kan blinka till."
+    else
+        echo "⚠️  Detta kommer att logga ut dig från KDE-sessionen!"
+        echo "    ALLA osparade filer kommer att gå förlorade."
+    fi
+    echo ""
+    read -p "Är du säker? Skriv 'ja' eller 'yes' för att bekräfta: " bekraftelse
+    
+    if [[ "$bekraftelse" != "ja" && "$bekraftelse" != "yes" ]]; then
+        echo "✅ Avbruten. Ingen åtgärd utfördes."
+        exit 0
+    fi
+fi
+
+# Utför vald åtgärd
+echo ""
+if [[ "$ACTION" == "restart" ]]; then
+    echo "🔄 Startar om plasmashell..."
+    
+    # Försök med olika metoder (beroende på KDE-version)
+    if command -v kquitapp5 &> /dev/null && command -v kstart5 &> /dev/null; then
+        kquitapp5 plasmashell 2>/dev/null || true
+        sleep 1
+        kstart5 plasmashell 2>/dev/null &
+        echo "✅ Plasmashell omstartad."
+    elif command -v plasmashell &> /dev/null; then
+        # Äldre metod
+        plasmashell --replace &
+        echo "✅ Plasmashell omstartad (--replace)."
+    else
+        echo "❌ Kunde inte starta om plasmashell. Försök med utloggning istället."
+        exit 1
+    fi
+else
+    echo "🚪 Loggar ut från KDE..."
+    
+    # Kontrollera att KSMServer finns tillgänglig
+    if ! qdbus org.kde.ksmserver /KSMServer 2>/dev/null | grep -q logout; then
+        echo "❌ KDE-sessionshanteraren (KSMServer) hittades inte."
+        exit 1
+    fi
+    
+    # Utför utloggning (utan dialog, vi har redan bekräftat)
+    qdbus org.kde.ksmserver /KSMServer logout 0 0 0
+    
+    # Skriptet når hit endast om utloggningen avbryts
+    echo "❌ Utloggningen avbröts eller misslyckades."
+    exit 1
+fi
+
+exit 0
